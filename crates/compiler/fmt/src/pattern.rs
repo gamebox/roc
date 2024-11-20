@@ -1,11 +1,17 @@
-use crate::annotation::{Formattable, Newlines, Parens};
+use crate::annotation::{Formattable, MigrationFlags, Newlines, Parens};
 use crate::expr::{fmt_str_literal, format_sq_literal, is_str_multiline};
 use crate::spaces::{fmt_comments_only, fmt_spaces, NewlineAt, INDENT};
 use crate::Buf;
 use roc_parse::ast::{Base, CommentOrNewline, Pattern, PatternAs};
 
-pub fn fmt_pattern<'a>(buf: &mut Buf, pattern: &'a Pattern<'a>, indent: u16, parens: Parens) {
-    pattern.format_with_options(buf, parens, Newlines::No, indent);
+pub fn fmt_pattern<'a>(
+    buf: &mut Buf,
+    pattern: &'a Pattern<'a>,
+    flags: &MigrationFlags,
+    indent: u16,
+    parens: Parens,
+) {
+    pattern.format_with_options(buf, parens, Newlines::No, flags, indent);
 }
 
 impl<'a> Formattable for PatternAs<'a> {
@@ -18,6 +24,7 @@ impl<'a> Formattable for PatternAs<'a> {
         buf: &mut Buf,
         _parens: Parens,
         _newlines: Newlines,
+        _flags: &MigrationFlags,
         indent: u16,
     ) {
         buf.indent(indent);
@@ -86,13 +93,20 @@ impl<'a> Formattable for Pattern<'a> {
         }
     }
 
-    fn format_with_options(&self, buf: &mut Buf, parens: Parens, newlines: Newlines, indent: u16) {
+    fn format_with_options(
+        &self,
+        buf: &mut Buf,
+        parens: Parens,
+        newlines: Newlines,
+        flags: &MigrationFlags,
+        indent: u16,
+    ) {
         use self::Pattern::*;
 
         match self {
             Identifier { ident: string } => {
                 buf.indent(indent);
-                buf.push_str(string);
+                snakify_camel_ident(buf, string, flags);
             }
             Tag(name) | OpaqueRef(name) => {
                 buf.indent(indent);
@@ -114,11 +128,17 @@ impl<'a> Formattable for Pattern<'a> {
                     buf.push('(');
                 }
 
-                loc_pattern.format_with_options(buf, Parens::InApply, Newlines::No, indent);
+                loc_pattern.format_with_options(buf, Parens::InApply, Newlines::No, flags, indent);
 
                 for loc_arg in loc_arg_patterns.iter() {
                     buf.spaces(1);
-                    loc_arg.format_with_options(buf, Parens::InApply, Newlines::No, indent_more);
+                    loc_arg.format_with_options(
+                        buf,
+                        Parens::InApply,
+                        Newlines::No,
+                        flags,
+                        indent_more,
+                    );
                 }
 
                 if parens {
@@ -133,7 +153,7 @@ impl<'a> Formattable for Pattern<'a> {
                     buf.spaces(1);
                     let mut it = loc_patterns.iter().peekable();
                     while let Some(loc_pattern) = it.next() {
-                        loc_pattern.format(buf, indent);
+                        loc_pattern.format(buf, flags, indent);
 
                         if it.peek().is_some() {
                             buf.push_str(",");
@@ -148,18 +168,18 @@ impl<'a> Formattable for Pattern<'a> {
 
             RequiredField(name, loc_pattern) => {
                 buf.indent(indent);
-                buf.push_str(name);
+                snakify_camel_ident(buf, name, flags);
                 buf.push_str(":");
                 buf.spaces(1);
-                loc_pattern.format(buf, indent);
+                loc_pattern.format(buf, flags, indent);
             }
 
             OptionalField(name, loc_pattern) => {
                 buf.indent(indent);
-                buf.push_str(name);
+                snakify_camel_ident(buf, name, flags);
                 buf.push_str(" ?");
                 buf.spaces(1);
-                loc_pattern.format(buf, indent);
+                loc_pattern.format(buf, flags, indent);
             }
 
             &NumLiteral(string) => {
@@ -189,7 +209,7 @@ impl<'a> Formattable for Pattern<'a> {
                 buf.indent(indent);
                 buf.push_str(string);
             }
-            StrLiteral(literal) => fmt_str_literal(buf, *literal, indent),
+            StrLiteral(literal) => fmt_str_literal(buf, *literal, flags, indent),
             SingleQuote(string) => {
                 buf.indent(indent);
                 format_sq_literal(buf, string);
@@ -205,7 +225,7 @@ impl<'a> Formattable for Pattern<'a> {
 
                 let mut it = loc_patterns.iter().peekable();
                 while let Some(loc_pattern) = it.next() {
-                    loc_pattern.format(buf, indent);
+                    loc_pattern.format(buf, flags, indent);
 
                     if it.peek().is_some() {
                         buf.push_str(",");
@@ -221,7 +241,7 @@ impl<'a> Formattable for Pattern<'a> {
 
                 let mut it = loc_patterns.iter().peekable();
                 while let Some(loc_pattern) = it.next() {
-                    loc_pattern.format(buf, indent);
+                    loc_pattern.format(buf, flags, indent);
 
                     if it.peek().is_some() {
                         buf.push_str(",");
@@ -239,7 +259,7 @@ impl<'a> Formattable for Pattern<'a> {
                     // these spaces "belong" to the `..`, which can never be multiline
                     fmt_comments_only(buf, list_rest_spaces.iter(), NewlineAt::Bottom, indent);
 
-                    pattern_as.format(buf, indent + INDENT);
+                    pattern_as.format(buf, flags, indent + INDENT);
                 }
             }
 
@@ -250,9 +270,9 @@ impl<'a> Formattable for Pattern<'a> {
                     buf.push('(');
                 }
 
-                fmt_pattern(buf, &pattern.value, indent, parens);
+                fmt_pattern(buf, &pattern.value, flags, indent, parens);
 
-                pattern_as.format(buf, indent + INDENT);
+                pattern_as.format(buf, flags, indent + INDENT);
 
                 if needs_parens {
                     buf.push(')');
@@ -267,10 +287,10 @@ impl<'a> Formattable for Pattern<'a> {
                     fmt_spaces(buf, spaces.iter(), indent);
                 }
 
-                sub_pattern.format_with_options(buf, parens, newlines, indent);
+                sub_pattern.format_with_options(buf, parens, newlines, flags, indent);
             }
             SpaceAfter(sub_pattern, spaces) => {
-                sub_pattern.format_with_options(buf, parens, newlines, indent);
+                sub_pattern.format_with_options(buf, parens, newlines, flags, indent);
 
                 if starts_with_inline_comment(spaces.iter()) {
                     buf.spaces(1);
@@ -295,7 +315,7 @@ impl<'a> Formattable for Pattern<'a> {
                     buf.push('.');
                 }
 
-                buf.push_str(ident);
+                snakify_camel_ident(buf, ident, flags);
             }
         }
     }
@@ -308,4 +328,93 @@ fn starts_with_inline_comment<'a, I: IntoIterator<Item = &'a CommentOrNewline<'a
         spaces.into_iter().next(),
         Some(CommentOrNewline::LineComment(_))
     )
+}
+
+fn snakify_camel_ident(buf: &mut Buf, string: &str, flags: &MigrationFlags) {
+    let chars: Vec<char> = string.chars().collect();
+    if !flags.snakify || (string.contains('_') && !string.ends_with('_')) {
+        buf.push_str(string);
+        return;
+    }
+    let mut index = 0;
+    let len = chars.len();
+
+    while index < len {
+        let prev = if index == 0 {
+            None
+        } else {
+            Some(chars[index - 1])
+        };
+        let c = chars[index];
+        let next = chars.get(index + 1);
+        let boundary = match (prev, c, next) {
+            // LUU, LUN, and LUL (simplified to LU_)
+            (Some(p), curr, _) if !p.is_ascii_uppercase() && curr.is_ascii_uppercase() => true,
+            // UUL
+            (Some(p), curr, Some(n))
+                if p.is_ascii_uppercase()
+                    && curr.is_ascii_uppercase()
+                    && n.is_ascii_lowercase() =>
+            {
+                true
+            }
+            _ => false,
+        };
+        // those are boundary transitions - should push _ and curr
+        if boundary {
+            buf.push('_');
+        }
+        buf.push(c.to_ascii_lowercase());
+        index = index + 1;
+    }
+}
+
+#[cfg(test)]
+mod snakify_test {
+    use bumpalo::Bump;
+
+    use super::snakify_camel_ident;
+    use crate::{annotation::MigrationFlags, Buf};
+
+    fn check_snakify(arena: &Bump, original: &str) -> String {
+        let mut buf = Buf::new_in(arena);
+        buf.indent(0);
+        let flags = MigrationFlags::new(true);
+        snakify_camel_ident(&mut buf, original, &flags);
+        buf.text.to_string()
+    }
+
+    #[test]
+    fn test_snakify_camel_ident() {
+        let arena = Bump::new();
+        assert_eq!(check_snakify(&arena, "A"), "a");
+        assert_eq!(check_snakify(&arena, "Ba"), "ba");
+        assert_eq!(check_snakify(&arena, "aB"), "a_b");
+        assert_eq!(check_snakify(&arena, "aBa"), "a_ba");
+        assert_eq!(check_snakify(&arena, "mBB"), "m_bb");
+        assert_eq!(check_snakify(&arena, "NbA"), "nb_a");
+        assert_eq!(check_snakify(&arena, "doIT"), "do_it");
+        assert_eq!(check_snakify(&arena, "ROC"), "roc");
+        assert_eq!(
+            check_snakify(&arena, "someHTTPRequest"),
+            "some_http_request"
+        );
+        assert_eq!(check_snakify(&arena, "usingXML"), "using_xml");
+        assert_eq!(check_snakify(&arena, "some123"), "some123");
+        assert_eq!(
+            check_snakify(&arena, "theHTTPStatus404"),
+            "the_http_status404"
+        );
+        assert_eq!(
+            check_snakify(&arena, "inThe99thPercentile"),
+            "in_the99th_percentile"
+        );
+        assert_eq!(
+            check_snakify(&arena, "all400SeriesErrorCodes"),
+            "all400_series_error_codes",
+        );
+        assert_eq!(check_snakify(&arena, "number4Yellow"), "number4_yellow");
+        assert_eq!(check_snakify(&arena, "useCases4Cobol"), "use_cases4_cobol");
+        assert_eq!(check_snakify(&arena, "c3PO"), "c3_po")
+    }
 }
