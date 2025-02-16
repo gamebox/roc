@@ -55,6 +55,17 @@ fn test_parser(source: []const u8, run: fn (parser: Parser) TestError!void) Test
 }
 
 pub fn advance(self: *Parser) void {
+    while (true) {
+        self.pos += 1;
+        if (self.peek() != .Newline) {
+            break;
+        }
+    }
+    // We have an EndOfFile token that we never expect to advance past
+    std.debug.assert(self.pos < self.tok_buf.tokens.len);
+}
+
+pub fn advanceOne(self: *Parser) void {
     self.pos += 1;
     // We have an EndOfFile token that we never expect to advance past
     std.debug.assert(self.pos < self.tok_buf.tokens.len);
@@ -73,28 +84,6 @@ pub fn peekNext(self: Parser) Token.Tag {
     return self.tok_buf.tokens.items(.tag)[next];
 }
 
-// If the next token is a newline, consume it
-// Returns the indent level of the next line if it is a newline, otherwise null
-pub fn consumeNewline(self: *Parser) ?u16 {
-    if (self.peek() != .Newline) {
-        return null;
-    }
-    var indent: u32 = 0;
-    const t = self.tok_buf.tokens.get(self.pos);
-    indent = t.offset;
-    self.advance();
-    return @intCast(indent);
-}
-
-// Returns the indent level of the next line if the next token is a newline, otherwise null
-pub fn peekNewline(self: *Parser) ?u16 {
-    if (self.peek() != .Newline) {
-        return null;
-    }
-    const indent = self.tok_buf.tokens.items(.offset)[self.pos];
-    return @intCast(indent);
-}
-
 pub fn parseFile(self: *Parser) void {
     self.store.emptyScratch();
     _ = self.store.addFile(.{
@@ -106,14 +95,11 @@ pub fn parseFile(self: *Parser) void {
     const header = self.parseHeader();
 
     while (self.peek() != .EndOfFile) {
-        if (self.consumeNewline()) |indent| {
-            std.debug.assert(indent == 0); // TODO: report an error
-        }
         if (self.peek() == .EndOfFile) {
             break;
         }
         const scratch_top = self.store.scratch_statements.items.len;
-        if (self.parseStmt(0)) |idx| {
+        if (self.parseStmt()) |idx| {
             if (self.store.scratch_statements.items.len > scratch_top) {
                 self.store.scratch_statements.shrinkRetainingCapacity(scratch_top);
             }
@@ -157,15 +143,12 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
     var platform_name: ?TokenIdx = null;
 
     self.advance();
-    const start_indent = 0;
-    var indent = self.consumeNewline() orelse start_indent;
 
     // Get provides
     if (self.peek() != .OpenSquare) {
         std.debug.panic("TODO: Handle header with no provides open bracket: {s}", .{@tagName(self.peek())});
     }
     self.advance();
-    indent = self.consumeNewline() orelse indent;
     const scratch_top = self.store.scratch_tokens.items.len;
     while (self.peek() != .CloseSquare) {
         if (self.peek() != .LowerIdent and self.peek() != .UpperIdent) {
@@ -179,17 +162,7 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
             provides = self.store.scratch_tokens.items[scratch_top..];
             self.store.scratch_tokens.shrinkRetainingCapacity(scratch_top);
             break;
-        } else if (self.consumeNewline()) |i| {
-            if (i <= indent) {
-                std.debug.panic("TODO: Handle bad indent: {s}", .{@tagName(self.peek())});
-            }
         }
-    }
-    if (self.consumeNewline()) |i| {
-        if (i > indent) {
-            std.debug.panic("TODO: Handle bad indent: {s}", .{@tagName(self.peek())});
-        }
-        indent = i;
     }
     if (self.peek() != .CloseSquare) {
         std.debug.panic("TODO: Handle Bad header no closing provides bracket: {s}", .{@tagName(self.peek())});
@@ -203,7 +176,6 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
     }
     self.advance();
     while (self.peek() != .CloseCurly) {
-        indent = self.consumeNewline() orelse indent;
         if (self.peek() != .LowerIdent) {
             std.debug.panic("TODO: Handle bad package identifier: {s}", .{@tagName(self.peek())});
         }
@@ -229,6 +201,7 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
             }
             const value = self.store.addExpr(.{ .string = .{
                 .token = self.pos,
+                .parts = &.{},
                 .region = .{ .start = self.pos, .end = self.pos },
             } });
             self.store.scratch_record_fields.append(self.store.addRecordField(.{
@@ -244,12 +217,6 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
         } else {
             self.advance();
         }
-    }
-    if (self.consumeNewline()) |i| {
-        if (i > indent) {
-            std.debug.panic("TODO: Handle bad indent: {s}", .{@tagName(self.peek())});
-        }
-        indent = i;
     }
     if (self.peek() != .CloseCurly) {
         std.debug.panic("TODO: Handle Bad header no end curly in packages: {s}", .{@tagName(self.peek())});
@@ -274,13 +241,13 @@ pub fn parseHeader(self: *Parser) IR.NodeStore.HeaderIdx {
     std.debug.panic("TODO: Handle header with no platform: {s}", .{@tagName(self.peek())});
 }
 
-pub fn parseStmt(self: *Parser, base_indent: u16) ?IR.NodeStore.StatementIdx {
+pub fn parseStmt(self: *Parser) ?IR.NodeStore.StatementIdx {
     switch (self.peek()) {
         .LowerIdent => {
             const start = self.pos;
             if (self.peekNext() == .OpAssign) {
                 self.advance();
-                if (self.finishParseAssign(base_indent)) |idx| {
+                if (self.finishParseAssign()) |idx| {
                     const patt_idx = self.store.addPattern(.{ .ident = .{
                         .ident_tok = start,
                         .region = .{ .start = start, .end = start },
@@ -343,7 +310,7 @@ pub fn parseStmt(self: *Parser, base_indent: u16) ?IR.NodeStore.StatementIdx {
         },
         .UpperIdent => {
             const start = self.pos;
-            const expr = self.parseExpr(base_indent);
+            const expr = self.parseExpr();
             const statement_idx = self.store.addStatement(.{ .expr = .{
                 .expr = expr,
                 .region = .{ .start = start, .end = self.pos },
@@ -358,7 +325,7 @@ pub fn parseStmt(self: *Parser, base_indent: u16) ?IR.NodeStore.StatementIdx {
     }
 }
 
-pub fn parseExpr(self: *Parser, min_indent: u16) IR.NodeStore.ExprIdx {
+pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
     const start = self.pos;
     var expr: ?IR.NodeStore.ExprIdx = null;
     switch (self.peek()) {
@@ -407,8 +374,46 @@ pub fn parseExpr(self: *Parser, min_indent: u16) IR.NodeStore.ExprIdx {
             self.advance();
             expr = self.store.addExpr(.{ .string = .{
                 .token = start,
+                .parts = &.{},
                 .region = .{ .start = start, .end = start },
             } });
+        },
+        .StringBegin => {
+            // Start parsing string interpolation
+            // StringBegin, OpenCurly, <expr>, CloseCurly, StringPart, OpenCurly, <expr>, CloseCurly, StringEnd
+            const string_begin_node_idx = self.store.addExpr(.{ .string = .{
+                .token = start,
+                .parts = &.{},
+                .region = .{ .start = start, .end = start },
+            } });
+            self.advance();
+            const scratch_top = self.store.scratch_exprs.items.len;
+            self.store.scratch_exprs.append(string_begin_node_idx) catch exitOnOom();
+            while (self.peek() != .StringEnd and self.peek() != .EndOfFile) {
+                if (self.peek() != .OpenCurly) {
+                    break;
+                }
+                self.advance();
+                self.store.scratch_exprs.append(self.parseExpr()) catch exitOnOom();
+                if (self.peek() != .CloseCurly) {
+                    break;
+                }
+                self.advance();
+                if (self.peek() == .StringPart) {
+                    self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
+                        .token = start,
+                        .parts = &.{},
+                        .region = .{ .start = start, .end = start },
+                    } })) catch exitOnOom();
+                }
+            }
+            const parts = self.store.scratch_exprs.items[scratch_top..];
+            expr = self.store.addExpr(.{ .string = .{
+                .token = start,
+                .parts = parts,
+                .region = .{ .start = start, .end = self.pos },
+            } });
+            self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
         },
         else => {
             std.debug.print("Tokens:\n{any}", .{self.tok_buf.tokens.items(.tag)});
@@ -422,14 +427,7 @@ pub fn parseExpr(self: *Parser, min_indent: u16) IR.NodeStore.ExprIdx {
             const scratch_top = self.store.scratch_exprs.items.len;
             while (self.peek() != .CloseRound) {
                 self.advance();
-                var indent = min_indent;
-                if (self.consumeNewline()) |i| {
-                    if (i < min_indent) {
-                        std.debug.panic("TODO: Indent problem", .{});
-                        indent = i;
-                    }
-                }
-                const arg_expression = self.parseExpr(indent);
+                const arg_expression = self.parseExpr();
                 self.store.scratch_exprs.append(arg_expression) catch exitOnOom();
             }
             self.advance();
@@ -446,25 +444,18 @@ pub fn parseExpr(self: *Parser, min_indent: u16) IR.NodeStore.ExprIdx {
     std.debug.panic("todo: Malformed Expr", .{});
 }
 
-pub fn finishParseAssign(self: *Parser, base_indent: u16) ?IR.NodeStore.BodyIdx {
+pub fn finishParseAssign(self: *Parser) ?IR.NodeStore.BodyIdx {
     self.advance();
-    if (self.consumeNewline()) |indent| {
-        if (indent <= base_indent) {
-            std.debug.panic("todo: emit error", .{});
-        }
-
+    if (self.peek() == .OpenCurly) {
+        self.advance();
         const scratch_top = self.store.scratch_statements.items.len;
         defer self.store.scratch_statements.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            const statement = self.parseStmt(indent) orelse break;
+            const statement = self.parseStmt() orelse break;
             self.store.scratch_statements.append(statement) catch exitOnOom();
-            if (self.peekNewline()) |i| {
-                if (i <= base_indent) {
-                    break;
-                }
+            if (self.peek() == .CloseCurly) {
                 self.advance();
-            } else {
                 break;
             }
         }
@@ -475,7 +466,7 @@ pub fn finishParseAssign(self: *Parser, base_indent: u16) ?IR.NodeStore.BodyIdx 
         return body;
     } else {
         const start = self.pos;
-        const expr = self.parseExpr(base_indent);
+        const expr = self.parseExpr();
         const statement = self.store.addStatement(.{ .expr = .{
             .expr = expr,
             .region = .{ .start = start, .end = self.pos },
@@ -483,4 +474,8 @@ pub fn finishParseAssign(self: *Parser, base_indent: u16) ?IR.NodeStore.BodyIdx 
         const body = self.store.addBody(.{ .statements = &.{statement}, .whitespace = null });
         return body;
     }
+}
+
+pub fn addProblem(self: *Parser, diagnostic: IR.Diagnostic) void {
+    self.diagnostics.append(diagnostic) catch exitOnOom();
 }

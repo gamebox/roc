@@ -17,6 +17,16 @@ pub const Diagnostic = struct {
 
     pub const Tag = enum {
         // TODO
+        app_header_no_provides,
+        app_header_provides_no_close,
+        app_header_provides_bad_content,
+        app_header_no_packages,
+        app_header_packages_no_close,
+        app_header_no_platform,
+        app_header_packages_bad_ident,
+        app_header_packages_malformed_entry,
+        app_header_packages_bad_uri,
+        statement_expected,
     };
 };
 
@@ -728,6 +738,11 @@ pub const NodeStore = struct {
             .string => |e| {
                 node.tag = .string;
                 node.main_token = e.token;
+                node.data.lhs = if (e.parts.len > 0) @as(u32, @intCast(store.extra_data.items.len)) else 0;
+                node.data.rhs = @as(u32, @intCast(e.parts.len));
+                for (e.parts) |part| {
+                    store.extra_data.append(part.id) catch exitOnOom();
+                }
             },
             .list => |_| {},
             .tuple => |_| {},
@@ -988,8 +1003,22 @@ pub const NodeStore = struct {
                 } };
             },
             .string => {
+                if (node.data.rhs > 0) {
+                    const scratch_top = store.scratch_exprs.items.len;
+                    for (store.extra_data.items[node.data.lhs..(node.data.lhs + node.data.rhs)]) |d| {
+                        store.scratch_exprs.append(.{ .id = d }) catch exitOnOom();
+                    }
+                    const parts = store.scratch_exprs.items[scratch_top..];
+                    store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
+                    return .{ .string = .{
+                        .token = node.main_token,
+                        .parts = parts,
+                        .region = emptyRegion(),
+                    } };
+                }
                 return .{ .string = .{
                     .token = node.main_token,
+                    .parts = &.{},
                     .region = emptyRegion(),
                 } };
             },
@@ -1199,6 +1228,7 @@ pub const NodeStore = struct {
         string: struct {
             token: TokenIdx,
             region: Region,
+            parts: []const ExprIdx,
         },
         list: struct {
             items: []const ExprIdx,

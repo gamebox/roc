@@ -62,12 +62,7 @@ fn formatStatement(fmt: *Formatter, si: StatementIdx) void {
     switch (statement) {
         .decl => |d| {
             fmt.formatPattern(d.pattern);
-            const body = fmt.ast.store.getBody(d.body);
-            if (body.whitespace != null) {
-                fmt.buffer.appendSlice(" =") catch exitOnOom();
-            } else {
-                fmt.buffer.appendSlice(" = ") catch exitOnOom();
-            }
+            fmt.buffer.appendSlice(" = ") catch exitOnOom();
             fmt.formatBody(d.body);
         },
         .expr => |e| {
@@ -161,13 +156,18 @@ fn formatHeader(fmt: *Formatter, hi: HeaderIdx) void {
 
 fn formatBody(fmt: *Formatter, bi: BodyIdx) void {
     const body = fmt.ast.store.getBody(bi);
-    if (body.whitespace != null) {
+    if (body.whitespace != null and body.statements.len > 1) {
         fmt.curr_indent += 1;
+        fmt.buffer.append('{') catch exitOnOom();
         for (body.statements) |s| {
             fmt.ensureNewline();
             fmt.pushIndent();
             fmt.formatStatement(s);
         }
+        fmt.ensureNewline();
+        fmt.curr_indent -= 1;
+        fmt.pushIndent();
+        fmt.buffer.append('}') catch exitOnOom();
     } else if (body.statements.len == 1) {
         fmt.formatStatement(body.statements[0]);
     } else {
@@ -212,21 +212,63 @@ fn pushTokenText(fmt: *Formatter, ti: TokenIdx) void {
     fmt.buffer.appendSlice(text) catch exitOnOom();
 }
 
-test {
+fn moduleFmtsSame(source: []const u8) !void {
     const parse = @import("check/parse.zig").parse;
-    const source =
-        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
-        \\
-        \\import pf.Stdout
-        \\
-        \\main! =
-        \\    Stdout.line!("Hello, world!")
-    ;
     var test_ast = parse(std.testing.allocator, source);
+    try std.testing.expectEqual(test_ast.errors.len, 0);
     defer test_ast.deinit();
     var formatter = Formatter.init(test_ast, std.testing.allocator);
     defer formatter.deinit();
     const result = formatter.formatFile();
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualSlices(u8, source, result);
+}
+
+fn moduleFmtsTo(source: []const u8, to: []const u8) !void {
+    const parse = @import("check/parse.zig").parse;
+    var test_ast = parse(std.testing.allocator, source);
+    try std.testing.expectEqual(test_ast.errors.len, 0);
+    defer test_ast.deinit();
+    var formatter = Formatter.init(test_ast, std.testing.allocator);
+    defer formatter.deinit();
+    const result = formatter.formatFile();
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualSlices(u8, to, result);
+}
+
+test {
+    try moduleFmtsSame(
+        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
+        \\
+        \\import pf.Stdout
+        \\
+        \\main! = Stdout.line!("Hello, world!")
+    );
+
+    try moduleFmtsSame(
+        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
+        \\
+        \\import pf.Stdout
+        \\
+        \\main! = {
+        \\    world = "World"
+        \\    Stdout.line!("Hello, world!")
+        \\}
+    );
+    try moduleFmtsTo(
+        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
+        \\
+        \\import pf.Stdout
+        \\
+        \\main! = {world = "World" Stdout.line!("Hello, world!")}
+    ,
+        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
+        \\
+        \\import pf.Stdout
+        \\
+        \\main! = {
+        \\    world = "World"
+        \\    Stdout.line!("Hello, world!")
+        \\}
+    );
 }
