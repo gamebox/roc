@@ -91,23 +91,62 @@ fn formatExpr(fmt: *Formatter, ei: ExprIdx) void {
     switch (expr) {
         .apply => |a| {
             fmt.formatExpr(a.@"fn");
-            fmt.buffer.append('(') catch exitOnOom();
+            fmt.push('(');
             const args_len = a.args.len;
             var i: usize = 0;
             for (a.args) |arg| {
                 fmt.formatExpr(arg);
                 i += 1;
                 if (i < args_len) {
-                    fmt.buffer.append(',') catch exitOnOom();
+                    fmt.pushAll(", ");
                 }
             }
-            fmt.buffer.append(')') catch exitOnOom();
+            fmt.push(')');
         },
         .string => |s| {
-            fmt.pushTokenText(s.token);
+            if (s.parts.len == 0) {
+                fmt.pushTokenText(s.token);
+                return;
+            }
+            // Parts are always STRING, EXPR, STRING, EXPR, ...
+            std.debug.assert(s.parts.len % 2 == 0);
+
+            var i: usize = 0;
+            while (i < s.parts.len) {
+                const e = fmt.ast.store.getExpr(s.parts[i]);
+                switch (e) {
+                    .string => |str| {
+                        fmt.pushTokenText(str.token);
+                    },
+                    else => {
+                        std.debug.panic("This should never happen", .{});
+                    },
+                }
+                i += 1;
+                fmt.pushAll("{");
+                fmt.formatExpr(s.parts[i]);
+                fmt.push('}');
+                i += 1;
+            }
+            fmt.push('"');
         },
         .ident => |i| {
             fmt.formatIdent(i.token, i.qualifier);
+        },
+        .int => |i| {
+            fmt.pushTokenText(i.token);
+        },
+        .list => |l| {
+            fmt.push('[');
+            var i: usize = 0;
+            for (l.items) |item| {
+                fmt.formatExpr(item);
+                if (i < (l.items.len - 1)) {
+                    fmt.pushAll(", ");
+                }
+                i += 1;
+            }
+            fmt.push(']');
         },
         else => {
             std.debug.panic("TODO: Handle formatting {s}", .{@tagName(expr)});
@@ -188,7 +227,27 @@ fn newline(fmt: *Formatter) void {
     fmt.buffer.append('\n') catch exitOnOom();
 }
 
+fn isRegionMultiline(fmt: *Formatter, region: IR.Region) bool {
+    for (fmt.ast.tokens.tokens.items[region.start..region.end]) |t| {
+        switch (t.tag) {
+            .Newline => {
+                return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 const indent = "    ";
+
+fn push(fmt: *Formatter, c: u8) void {
+    fmt.buffer.append(c) catch exitOnOom();
+}
+
+fn pushAll(fmt: *Formatter, str: []const u8) void {
+    fmt.buffer.appendSlice(str) catch exitOnOom();
+}
 
 fn pushIndent(fmt: *Formatter) void {
     if (fmt.curr_indent == 0) {
@@ -215,8 +274,9 @@ fn pushTokenText(fmt: *Formatter, ti: TokenIdx) void {
 fn moduleFmtsSame(source: []const u8) !void {
     const parse = @import("check/parse.zig").parse;
     var test_ast = parse(std.testing.allocator, source);
-    try std.testing.expectEqual(test_ast.errors.len, 0);
     defer test_ast.deinit();
+    defer std.testing.allocator.free(test_ast.errors);
+    try std.testing.expectEqualSlices(IR.Diagnostic, test_ast.errors, &[_]IR.Diagnostic{});
     var formatter = Formatter.init(test_ast, std.testing.allocator);
     defer formatter.deinit();
     const result = formatter.formatFile();
@@ -227,8 +287,9 @@ fn moduleFmtsSame(source: []const u8) !void {
 fn moduleFmtsTo(source: []const u8, to: []const u8) !void {
     const parse = @import("check/parse.zig").parse;
     var test_ast = parse(std.testing.allocator, source);
-    try std.testing.expectEqual(test_ast.errors.len, 0);
     defer test_ast.deinit();
+    defer std.testing.allocator.free(test_ast.errors);
+    try std.testing.expectEqualSlices(IR.Diagnostic, test_ast.errors, &[_]IR.Diagnostic{});
     var formatter = Formatter.init(test_ast, std.testing.allocator);
     defer formatter.deinit();
     const result = formatter.formatFile();
@@ -236,7 +297,7 @@ fn moduleFmtsTo(source: []const u8, to: []const u8) !void {
     try std.testing.expectEqualSlices(u8, to, result);
 }
 
-test {
+test "Hello world" {
     try moduleFmtsSame(
         \\app [main!] { pf: platform "../basic-cli/platform.roc" }
         \\
@@ -244,7 +305,9 @@ test {
         \\
         \\main! = Stdout.line!("Hello, world!")
     );
+}
 
+test "Hello world with block" {
     try moduleFmtsSame(
         \\app [main!] { pf: platform "../basic-cli/platform.roc" }
         \\
@@ -255,6 +318,9 @@ test {
         \\    Stdout.line!("Hello, world!")
         \\}
     );
+}
+
+test "Hello world no newlines block" {
     try moduleFmtsTo(
         \\app [main!] { pf: platform "../basic-cli/platform.roc" }
         \\
@@ -269,6 +335,22 @@ test {
         \\main! = {
         \\    world = "World"
         \\    Stdout.line!("Hello, world!")
+        \\}
+    );
+}
+
+test "Syntax grab bag" {
+    try moduleFmtsSame(
+        \\app [main!] { pf: platform "../basic-cli/platform.roc" }
+        \\
+        \\import pf.Stdout
+        \\
+        \\main! = {
+        \\    world = "World"
+        \\    number = 123
+        \\    interpolated = "Hello, ${world}"
+        \\    list = [number, 456, 789]
+        \\    Stdout.line!(interpolated)
         \\}
     );
 }

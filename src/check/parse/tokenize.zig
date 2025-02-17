@@ -1219,7 +1219,7 @@ pub const Tokenizer = struct {
                         self.cursor.pos += 1;
                         switch (state) {
                             .start => return .String,
-                            .after_interpolation => return .StringPart,
+                            .after_interpolation => return .StringEnd,
                         }
                     } else if (kind == .multi_line and c == term and self.cursor.peekAt(1) == term and self.cursor.peekAt(2) == term) {
                         self.cursor.pos += 3;

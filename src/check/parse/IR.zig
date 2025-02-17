@@ -27,6 +27,7 @@ pub const Diagnostic = struct {
         app_header_packages_malformed_entry,
         app_header_packages_bad_uri,
         statement_expected,
+        list_not_closed,
     };
 };
 
@@ -744,7 +745,15 @@ pub const NodeStore = struct {
                     store.extra_data.append(part.id) catch exitOnOom();
                 }
             },
-            .list => |_| {},
+            .list => |l| {
+                node.tag = .list;
+                node.main_token = l.region.start;
+                node.data.lhs = @as(u32, @intCast(store.extra_data.items.len));
+                node.data.rhs = @as(u32, @intCast(l.items.len));
+                for (l.items) |item| {
+                    store.extra_data.append(item.id) catch exitOnOom();
+                }
+            },
             .tuple => |_| {},
             .record => |_| {},
             .tag => |e| {
@@ -991,6 +1000,12 @@ pub const NodeStore = struct {
     pub fn getExpr(store: *NodeStore, expr: ExprIdx) Expr {
         const node = store.nodes.get(@enumFromInt(expr.id));
         switch (node.tag) {
+            .int => {
+                return .{ .int = .{
+                    .token = node.main_token,
+                    .region = emptyRegion(),
+                } };
+            },
             .ident => {
                 var qualifier: ?TokenIdx = null;
                 if (node.data.rhs == 1) {
@@ -1022,6 +1037,22 @@ pub const NodeStore = struct {
                     .region = emptyRegion(),
                 } };
             },
+            .list => {
+                var extra_data_pos = @as(usize, @intCast(node.data.lhs));
+                const extra_data_end = extra_data_pos + node.data.rhs;
+                const scratch_top = store.scratch_exprs.items.len;
+                while (extra_data_pos < extra_data_end) {
+                    store.scratch_exprs.append(.{ .id = @as(u32, @intCast(store.extra_data.items[extra_data_pos])) }) catch exitOnOom();
+                    extra_data_pos += 1;
+                }
+                const items = store.scratch_exprs.items[scratch_top..];
+                store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
+
+                return .{ .list = .{
+                    .items = items,
+                    .region = emptyRegion(),
+                } };
+            },
             .lambda => {
                 var extra_data_pos = @as(usize, @intCast(node.data.lhs));
                 const body_len = 1;
@@ -1033,6 +1064,7 @@ pub const NodeStore = struct {
                 extra_data_pos += 1;
                 while (extra_data_pos < extra_data_end) {
                     store.scratch_patterns.append(.{ .id = @as(u32, @intCast(store.extra_data.items[extra_data_pos])) }) catch exitOnOom();
+                    extra_data_pos += 1;
                 }
                 return .{ .lambda = .{
                     .body = body,

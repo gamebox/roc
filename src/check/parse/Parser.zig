@@ -386,26 +386,30 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 .parts = &.{},
                 .region = .{ .start = start, .end = start },
             } });
-            self.advance();
+            self.advanceOne();
             const scratch_top = self.store.scratch_exprs.items.len;
             self.store.scratch_exprs.append(string_begin_node_idx) catch exitOnOom();
             while (self.peek() != .StringEnd and self.peek() != .EndOfFile) {
                 if (self.peek() != .OpenCurly) {
                     break;
                 }
-                self.advance();
+                self.advanceOne();
                 self.store.scratch_exprs.append(self.parseExpr()) catch exitOnOom();
                 if (self.peek() != .CloseCurly) {
-                    break;
+                    continue;
                 }
-                self.advance();
+                self.advanceOne();
                 if (self.peek() == .StringPart) {
                     self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
                         .token = start,
                         .parts = &.{},
                         .region = .{ .start = start, .end = start },
                     } })) catch exitOnOom();
+                    self.advanceOne();
                 }
+            }
+            if (self.peek() == .StringEnd) {
+                self.advanceOne();
             }
             const parts = self.store.scratch_exprs.items[scratch_top..];
             expr = self.store.addExpr(.{ .string = .{
@@ -413,7 +417,31 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 .parts = parts,
                 .region = .{ .start = start, .end = self.pos },
             } });
+            self.advanceOne();
             self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
+        },
+        .OpenSquare => {
+            const scratch_top = self.store.scratch_exprs.items.len;
+            self.advance();
+            while (self.peek() != .CloseSquare) {
+                self.store.scratch_exprs.append(self.parseExpr()) catch exitOnOom();
+                if (self.peek() != .Comma) {
+                    break;
+                }
+                self.advance();
+            }
+            if (self.peek() != .CloseSquare) {
+                // No close problem
+                self.addProblem(
+                    .{ .region = .{ .start = start, .end = self.pos }, .tag = .list_not_closed },
+                );
+            }
+            self.advance();
+            const items = self.store.scratch_exprs.items[scratch_top..];
+            expr = self.store.addExpr(.{ .list = .{
+                .items = items,
+                .region = .{ .start = start, .end = self.pos },
+            } });
         },
         else => {
             std.debug.print("Tokens:\n{any}", .{self.tok_buf.tokens.items(.tag)});
