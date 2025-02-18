@@ -112,7 +112,6 @@ fn formatExpr(fmt: *Formatter, ei: ExprIdx) void {
             var i: usize = 0;
             while (i < s.parts.len) {
                 const e = fmt.ast.store.getExpr(s.parts[i]);
-                std.debug.print("formatExpr String part: {any}\n", .{e});
                 switch (e) {
                     .string => |str| {
                         fmt.pushTokenText(str.token);
@@ -239,7 +238,6 @@ fn ensureNewline(fmt: *Formatter) void {
 }
 
 fn newline(fmt: *Formatter) void {
-    // std.debug.print("newline\n", .{});
     fmt.buffer.append('\n') catch exitOnOom();
 }
 
@@ -284,7 +282,6 @@ fn pushTokenText(fmt: *Formatter, ti: TokenIdx) void {
         else => {},
     }
     const text = fmt.ast.source[start..(t.offset + t.length)];
-    std.debug.print("pushTokenText text: `{s}`\n", .{text});
     fmt.buffer.appendSlice(text) catch exitOnOom();
 }
 
@@ -362,11 +359,13 @@ test "Syntax grab bag" {
         \\
         \\import pf.Stdout
         \\
+        \\add_one = |num| n
+        \\
         \\main! = |_| {
         \\    world = "World"
         \\    number = 123
         \\    interpolated = "Hello, ${world}"
-        \\    list = [number, 456, 789]
+        \\    list = [add_one(number), 456, 789]
         \\    Stdout.line!(interpolated)?
         \\    Stdout.line!("How about ${Num.toStr(number)} as a string?")
         \\}

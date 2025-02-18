@@ -61,7 +61,6 @@ pub fn advance(self: *Parser) void {
             break;
         }
     }
-    std.debug.print("Advanced to {s}\n", .{@tagName(self.peek())});
     // We have an EndOfFile token that we never expect to advance past
     std.debug.assert(self.pos < self.tok_buf.tokens.len);
 }
@@ -421,14 +420,12 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 }
                 self.advanceOne();
                 const ex = self.parseExpr();
-                std.debug.print("parseExpr: String interpolation, got expression {any}", .{ex});
                 self.store.scratch_exprs.append(ex) catch exitOnOom();
                 if (self.peek() != .CloseCurly) {
                     continue;
                 }
                 self.advanceOne();
                 if (self.peek() == .StringPart) {
-                    std.debug.print("parseExpr: String interpolation, got StringPart", .{});
                     self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
                         .token = self.pos,
                         .parts = &.{},
@@ -438,7 +435,6 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 }
             }
             if (self.peek() == .StringEnd) {
-                std.debug.print("parseExpr: String interpolation, got StringEnd", .{});
                 self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
                     .token = self.pos,
                     .parts = &.{},
@@ -514,14 +510,11 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
             self.advance();
             while (self.peek() != .CloseRound) {
                 const arg_expression = self.parseExpr();
-                std.debug.print("arg_expression is {any}\n", .{self.store.getExpr(arg_expression)});
                 self.store.scratch_exprs.append(arg_expression) catch exitOnOom();
-                std.debug.print("Before checking comma {s}\n", .{@tagName(self.peek())});
                 if (self.peek() != .Comma) {
                     break;
                 }
                 self.advance();
-                std.debug.print("After checking comma {s}\n", .{@tagName(self.peek())});
             }
             if (self.peek() != .CloseRound) {
                 // Problem
