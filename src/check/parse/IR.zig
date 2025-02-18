@@ -761,6 +761,7 @@ pub const NodeStore = struct {
                 node.main_token = e.token;
             },
             .lambda => |l| {
+                node.tag = .lambda;
                 node.data.lhs = @as(u32, @intCast(store.extra_data.items.len));
                 node.data.rhs = @as(u32, @intCast(l.args.len));
                 store.extra_data.append(l.body.id) catch exitOnOom();
@@ -819,7 +820,10 @@ pub const NodeStore = struct {
                 node.data.lhs = op.left.id;
                 node.data.rhs = op.right.id;
             },
-            .suffix_single_question => |_| {},
+            .suffix_single_question => |op| {
+                node.tag = .suffix_single_question;
+                node.data.lhs = op.expr.id;
+            },
             .unary_neg => |_| {},
             .unary_not => |_| {},
             .if_then_else => |_| {},
@@ -991,6 +995,11 @@ pub const NodeStore = struct {
                     .region = emptyRegion(),
                 } };
             },
+            .underscore_patt => {
+                return .{ .underscore = .{
+                    .region = emptyRegion(),
+                } };
+            },
             else => {
                 std.debug.panic("Expected a valid pattern tag, got {s}", .{@tagName(node.tag)});
             },
@@ -1062,13 +1071,15 @@ pub const NodeStore = struct {
                     .id = @as(u32, @intCast(store.extra_data.items[extra_data_pos])),
                 };
                 extra_data_pos += 1;
+                const scratch_top = store.scratch_patterns.items.len;
+                defer store.scratch_patterns.shrinkRetainingCapacity(scratch_top);
                 while (extra_data_pos < extra_data_end) {
                     store.scratch_patterns.append(.{ .id = @as(u32, @intCast(store.extra_data.items[extra_data_pos])) }) catch exitOnOom();
                     extra_data_pos += 1;
                 }
                 return .{ .lambda = .{
                     .body = body,
-                    .args = store.scratch_patterns.toOwnedSlice() catch exitOnOom(),
+                    .args = store.scratch_patterns.items[scratch_top..],
                     .region = emptyRegion(),
                 } };
             },
@@ -1087,6 +1098,12 @@ pub const NodeStore = struct {
                     .@"fn" = .{ .id = function },
                     .args = args,
                     .region = emptyRegion(),
+                } };
+            },
+            .suffix_single_question => {
+                return .{ .suffix_single_question = .{
+                    .region = emptyRegion(),
+                    .expr = .{ .id = node.data.lhs },
                 } };
             },
             else => {

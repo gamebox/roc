@@ -61,6 +61,7 @@ pub fn advance(self: *Parser) void {
             break;
         }
     }
+    std.debug.print("Advanced to {s}\n", .{@tagName(self.peek())});
     // We have an EndOfFile token that we never expect to advance past
     std.debug.assert(self.pos < self.tok_buf.tokens.len);
 }
@@ -247,19 +248,17 @@ pub fn parseStmt(self: *Parser) ?IR.NodeStore.StatementIdx {
             const start = self.pos;
             if (self.peekNext() == .OpAssign) {
                 self.advance();
-                if (self.finishParseAssign()) |idx| {
-                    const patt_idx = self.store.addPattern(.{ .ident = .{
-                        .ident_tok = start,
-                        .region = .{ .start = start, .end = start },
-                    } });
-                    const statement_idx = self.store.addStatement(.{ .decl = .{
-                        .pattern = patt_idx,
-                        .body = idx,
-                        .region = .{ .start = start, .end = self.pos },
-                    } });
-                    return statement_idx;
-                }
-                return null;
+                const idx = self.finishParseAssign();
+                const patt_idx = self.store.addPattern(.{ .ident = .{
+                    .ident_tok = start,
+                    .region = .{ .start = start, .end = start },
+                } });
+                const statement_idx = self.store.addStatement(.{ .decl = .{
+                    .pattern = patt_idx,
+                    .body = idx,
+                    .region = .{ .start = start, .end = self.pos },
+                } });
+                return statement_idx;
             } else {
                 // If not a decl
                 const expr = self.store.addExpr(.{ .ident = .{
@@ -325,6 +324,32 @@ pub fn parseStmt(self: *Parser) ?IR.NodeStore.StatementIdx {
     }
 }
 
+pub fn parsePattern(self: *Parser) IR.NodeStore.PatternIdx {
+    const start = self.pos;
+    var pattern: ?IR.NodeStore.PatternIdx = null;
+    switch (self.peek()) {
+        .LowerIdent => {
+            pattern = self.store.addPattern(.{ .ident = .{
+                .ident_tok = start,
+                .region = .{ .start = start, .end = self.pos },
+            } });
+            self.advance();
+        },
+        .Underscore => {
+            pattern = self.store.addPattern(.{ .underscore = .{
+                .region = .{ .start = start, .end = start },
+            } });
+            self.advance();
+        },
+        else => {},
+    }
+
+    if (pattern) |p| {
+        return p;
+    }
+    std.debug.panic("Should have gotten a valid pattern", .{});
+}
+
 pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
     const start = self.pos;
     var expr: ?IR.NodeStore.ExprIdx = null;
@@ -388,28 +413,38 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
             } });
             self.advanceOne();
             const scratch_top = self.store.scratch_exprs.items.len;
+            defer self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
             self.store.scratch_exprs.append(string_begin_node_idx) catch exitOnOom();
             while (self.peek() != .StringEnd and self.peek() != .EndOfFile) {
                 if (self.peek() != .OpenCurly) {
                     break;
                 }
                 self.advanceOne();
-                self.store.scratch_exprs.append(self.parseExpr()) catch exitOnOom();
+                const ex = self.parseExpr();
+                std.debug.print("parseExpr: String interpolation, got expression {any}", .{ex});
+                self.store.scratch_exprs.append(ex) catch exitOnOom();
                 if (self.peek() != .CloseCurly) {
                     continue;
                 }
                 self.advanceOne();
                 if (self.peek() == .StringPart) {
+                    std.debug.print("parseExpr: String interpolation, got StringPart", .{});
                     self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
-                        .token = start,
+                        .token = self.pos,
                         .parts = &.{},
-                        .region = .{ .start = start, .end = start },
+                        .region = .{ .start = self.pos, .end = self.pos },
                     } })) catch exitOnOom();
                     self.advanceOne();
                 }
             }
             if (self.peek() == .StringEnd) {
-                self.advanceOne();
+                std.debug.print("parseExpr: String interpolation, got StringEnd", .{});
+                self.store.scratch_exprs.append(self.store.addExpr(.{ .string = .{
+                    .token = self.pos,
+                    .parts = &.{},
+                    .region = .{ .start = self.pos, .end = self.pos },
+                } })) catch exitOnOom();
+                self.advance();
             }
             const parts = self.store.scratch_exprs.items[scratch_top..];
             expr = self.store.addExpr(.{ .string = .{
@@ -417,11 +452,11 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 .parts = parts,
                 .region = .{ .start = start, .end = self.pos },
             } });
-            self.advanceOne();
             self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
         },
         .OpenSquare => {
             const scratch_top = self.store.scratch_exprs.items.len;
+            defer self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
             self.advance();
             while (self.peek() != .CloseSquare) {
                 self.store.scratch_exprs.append(self.parseExpr()) catch exitOnOom();
@@ -443,9 +478,32 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 .region = .{ .start = start, .end = self.pos },
             } });
         },
+        .OpBar => {
+            const scratch_top = self.store.scratch_patterns.items.len;
+            defer self.store.scratch_patterns.shrinkRetainingCapacity(scratch_top);
+            self.advance();
+            while (self.peek() != .OpBar) {
+                self.store.scratch_patterns.append(self.parsePattern()) catch exitOnOom();
+                if (self.peek() != .Comma) {
+                    break;
+                }
+                self.advance();
+            }
+            if (self.peek() != .OpBar) {
+                // self.addProblem()
+                std.debug.panic("TODO: Add problem for unclosed args, got {s}\n", .{@tagName(self.peek())});
+            }
+            const args = self.store.scratch_patterns.items[scratch_top..];
+            const body = self.finishParseAssign();
+            expr = self.store.addExpr(.{ .lambda = .{
+                .body = body,
+                .args = args,
+                .region = .{ .start = start, .end = self.pos },
+            } });
+        },
         else => {
-            std.debug.print("Tokens:\n{any}", .{self.tok_buf.tokens.items(.tag)});
-            std.debug.panic("todo: emit error - {s}", .{@tagName(self.peek())});
+            std.debug.print("Tokens:\n{any}\n", .{self.tok_buf.tokens.items(.tag)});
+            std.debug.panic("todo: emit error - {s}\n", .{@tagName(self.peek())});
         },
     }
     if (expr) |e| {
@@ -453,10 +511,22 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
         // Check for an apply...
         if (self.peek() == .OpenRound) {
             const scratch_top = self.store.scratch_exprs.items.len;
+            self.advance();
             while (self.peek() != .CloseRound) {
-                self.advance();
                 const arg_expression = self.parseExpr();
+                std.debug.print("arg_expression is {any}\n", .{self.store.getExpr(arg_expression)});
                 self.store.scratch_exprs.append(arg_expression) catch exitOnOom();
+                std.debug.print("Before checking comma {s}\n", .{@tagName(self.peek())});
+                if (self.peek() != .Comma) {
+                    break;
+                }
+                self.advance();
+                std.debug.print("After checking comma {s}\n", .{@tagName(self.peek())});
+            }
+            if (self.peek() != .CloseRound) {
+                // Problem
+                std.debug.print("Tokens:\n{any}\n", .{self.tok_buf.tokens.items(.tag)});
+                std.debug.panic("TODO: malformed apply @ {d}, got {s}", .{ self.pos, @tagName(self.peek()) });
             }
             self.advance();
             const args = self.store.scratch_exprs.items[scratch_top..];
@@ -465,6 +535,14 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
                 .@"fn" = e,
                 .region = .{ .start = start, .end = self.pos },
             } });
+            self.store.scratch_exprs.shrinkRetainingCapacity(scratch_top);
+        }
+        if (self.peek() == .NoSpaceOpQuestion) {
+            expression = self.store.addExpr(.{ .suffix_single_question = .{
+                .expr = expression,
+                .region = .{ .start = start, .end = self.pos },
+            } });
+            self.advance();
         }
         // Check for try suffix...
         return expression;
@@ -472,7 +550,7 @@ pub fn parseExpr(self: *Parser) IR.NodeStore.ExprIdx {
     std.debug.panic("todo: Malformed Expr", .{});
 }
 
-pub fn finishParseAssign(self: *Parser) ?IR.NodeStore.BodyIdx {
+pub fn finishParseAssign(self: *Parser) IR.NodeStore.BodyIdx {
     self.advance();
     if (self.peek() == .OpenCurly) {
         self.advance();

@@ -73,7 +73,7 @@ fn formatStatement(fmt: *Formatter, si: StatementIdx) void {
             fmt.formatIdent(i.module_name_tok, i.qualifier_tok);
         },
         else => {
-            std.debug.panic("TODO: Handle formatting {s}", .{@tagName(statement)});
+            std.debug.panic("TODO: Handle formatting {s}\n", .{@tagName(statement)});
         },
     }
 }
@@ -108,27 +108,23 @@ fn formatExpr(fmt: *Formatter, ei: ExprIdx) void {
                 fmt.pushTokenText(s.token);
                 return;
             }
-            // Parts are always STRING, EXPR, STRING, EXPR, ...
-            std.debug.assert(s.parts.len % 2 == 0);
 
             var i: usize = 0;
             while (i < s.parts.len) {
                 const e = fmt.ast.store.getExpr(s.parts[i]);
+                std.debug.print("formatExpr String part: {any}\n", .{e});
                 switch (e) {
                     .string => |str| {
                         fmt.pushTokenText(str.token);
                     },
                     else => {
-                        std.debug.panic("This should never happen", .{});
+                        fmt.pushAll("{");
+                        fmt.formatExpr(s.parts[i]);
+                        fmt.push('}');
                     },
                 }
                 i += 1;
-                fmt.pushAll("{");
-                fmt.formatExpr(s.parts[i]);
-                fmt.push('}');
-                i += 1;
             }
-            fmt.push('"');
         },
         .ident => |i| {
             fmt.formatIdent(i.token, i.qualifier);
@@ -148,6 +144,23 @@ fn formatExpr(fmt: *Formatter, ei: ExprIdx) void {
             }
             fmt.push(']');
         },
+        .lambda => |l| {
+            fmt.push('|');
+            var i: usize = 0;
+            for (l.args) |arg| {
+                fmt.formatPattern(arg);
+                if (i < (l.args.len - 1)) {
+                    fmt.pushAll(", ");
+                }
+                i += 1;
+            }
+            fmt.pushAll("| ");
+            fmt.formatBody(l.body);
+        },
+        .suffix_single_question => |s| {
+            fmt.formatExpr(s.expr);
+            fmt.push('?');
+        },
         else => {
             std.debug.panic("TODO: Handle formatting {s}", .{@tagName(expr)});
         },
@@ -159,6 +172,9 @@ fn formatPattern(fmt: *Formatter, pi: PatternIdx) void {
     switch (pattern) {
         .ident => |i| {
             fmt.formatIdent(i.ident_tok, null);
+        },
+        .underscore => |_| {
+            fmt.push('_');
         },
         else => {
             std.debug.panic("TODO: Handle formatting {s}", .{@tagName(pattern)});
@@ -268,6 +284,7 @@ fn pushTokenText(fmt: *Formatter, ti: TokenIdx) void {
         else => {},
     }
     const text = fmt.ast.source[start..(t.offset + t.length)];
+    std.debug.print("pushTokenText text: `{s}`\n", .{text});
     fmt.buffer.appendSlice(text) catch exitOnOom();
 }
 
@@ -345,12 +362,13 @@ test "Syntax grab bag" {
         \\
         \\import pf.Stdout
         \\
-        \\main! = {
+        \\main! = |_| {
         \\    world = "World"
         \\    number = 123
         \\    interpolated = "Hello, ${world}"
         \\    list = [number, 456, 789]
-        \\    Stdout.line!(interpolated)
+        \\    Stdout.line!(interpolated)?
+        \\    Stdout.line!("How about ${Num.toStr(number)} as a string?")
         \\}
     );
 }
